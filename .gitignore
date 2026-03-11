@@ -1,8 +1,6 @@
 .venv/
 models/
 downloads/
-build/
-dist/
 __pycache__/
 sample_*.mp4
 sample_*.json

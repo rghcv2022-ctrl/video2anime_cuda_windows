@@ -17,8 +17,6 @@ import imageio_ffmpeg
 import numpy as np
 import requests
 
-from runtime_manager import ensure_runtime_on_sys_path
-
 
 STYLE_MODELS = {
     "hayao": {
@@ -217,10 +215,9 @@ _DLL_PRELOADED_PATHS = set()
 def _get_ort(log_fn: LogFn = None):
     global _ORT
     if _ORT is None:
-        ensure_runtime_on_sys_path(log_fn)
         _prepare_windows_gpu_runtime(log_fn)
         _preload_windows_gpu_runtime(log_fn)
-        import onnxruntime as ort  # delayed import for packaged/runtime-managed Windows runtime
+        import onnxruntime as ort
         _ORT = ort
     return _ORT
 
@@ -259,12 +256,16 @@ class AnimeVideoConverter:
         input_meta = self.session.get_inputs()[0]
         self.input_name = input_meta.name
         self.input_layout = self._resolve_input_layout(input_meta.shape)
+        self.dynamic_spatial = self._has_dynamic_spatial_shape(input_meta.shape, self.input_layout)
         self.model_height, self.model_width = self._resolve_model_size(input_meta.shape, self.input_layout)
 
         self.log(f"Model ready: {self.model_path.name}")
         self.log(f"ONNX Runtime provider: {self.active_provider}")
         self.log(f"Model input layout: {self.input_layout}")
-        self.log(f"Model input size: {self.model_width}x{self.model_height}")
+        if self.dynamic_spatial:
+            self.log("Model input size: dynamic (will use source frame resolution)")
+        else:
+            self.log(f"Model input size: {self.model_width}x{self.model_height}")
 
     def _ensure_model(self) -> Path:
         meta = STYLE_MODELS[self.style]
@@ -353,6 +354,18 @@ class AnimeVideoConverter:
         return "NHWC"
 
     @staticmethod
+    def _has_dynamic_spatial_shape(shape, layout: str) -> bool:
+        if not shape or len(shape) != 4:
+            return True
+        if layout == "NHWC":
+            h = shape[1]
+            w = shape[2]
+        else:
+            h = shape[2]
+            w = shape[3]
+        return not (isinstance(h, int) and h > 0 and isinstance(w, int) and w > 0)
+
+    @staticmethod
     def _resolve_model_size(shape, layout: str) -> tuple[int, int]:
         default_h, default_w = 512, 512
         if not shape or len(shape) != 4:
@@ -392,7 +405,13 @@ class AnimeVideoConverter:
     def stylize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
         src_h, src_w = frame_bgr.shape[:2]
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        canvas, _scale, x0, y0, new_w, new_h = self._letterbox(rgb, self.model_width, self.model_height)
+
+        if self.dynamic_spatial:
+            canvas = rgb
+            x0 = y0 = 0
+            new_w, new_h = src_w, src_h
+        else:
+            canvas, _scale, x0, y0, new_w, new_h = self._letterbox(rgb, self.model_width, self.model_height)
 
         x = canvas.astype(np.float32) / 127.5 - 1.0
         if self.input_layout == "NCHW":
@@ -407,8 +426,11 @@ class AnimeVideoConverter:
             output = np.transpose(output, (1, 2, 0))
 
         output = np.clip((output + 1.0) * 127.5, 0, 255).astype(np.uint8)
-        output = self._unletterbox(output, src_w, src_h, x0, y0, new_w, new_h)
-        return cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
+        if self.dynamic_spatial:
+            result = output
+        else:
+            result = self._unletterbox(output, src_w, src_h, x0, y0, new_w, new_h)
+        return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
 
     def inspect_video(self, input_path: Union[str, Path]) -> VideoInfo:
         cap = cv2.VideoCapture(str(input_path))
