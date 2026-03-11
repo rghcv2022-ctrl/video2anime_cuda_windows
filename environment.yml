@@ -1,0 +1,12 @@
+name: video2anime39
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+      - numpy>=1.26.0
+      - opencv-python>=4.10.0
+      - onnxruntime-gpu>=1.18.0
+      - requests>=2.32.0
+      - imageio-ffmpeg>=0.5.1
